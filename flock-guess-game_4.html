@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Find the Flock Cameras: Newport News</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --ink:#1d2433; --muted:#5b6475; --accent:#2f5bea; --cam:#d6336c; --bg:#ffffff; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); }
+  #app { display:flex; flex-direction:column; height:100vh; height:100dvh; }
+  #map { flex:1; min-height:0; }
+  #bar { padding:10px 12px; background:var(--bg); border-top:1px solid #dde1ea; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #status { flex:1; min-width:150px; font-size:15px; }
+  #status b { font-variant-numeric:tabular-nums; }
+  button { font:inherit; font-size:15px; padding:9px 14px; border-radius:8px; border:1px solid #c9cfdb; background:#fff; color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button:disabled { opacity:.45; cursor:default; }
+  .overlay { position:fixed; inset:0; background:rgba(20,24,35,.55); display:flex; align-items:center; justify-content:center; z-index:2000; padding:16px; }
+  .card { background:#fff; border-radius:14px; padding:20px; width:100%; max-width:440px; max-height:90vh; overflow:auto; box-shadow:0 10px 40px rgba(0,0,0,.25); }
+  .card h1 { font-size:21px; margin:0 0 8px; }
+  .card h2 { font-size:18px; margin:0 0 8px; }
+  .card p { margin:6px 0 12px; color:var(--muted); line-height:1.4; font-size:15px; }
+  label { display:block; font-size:14px; font-weight:600; margin:10px 0 4px; }
+  input { width:100%; font:inherit; font-size:16px; padding:9px 10px; border:1px solid #c9cfdb; border-radius:8px; }
+  .row { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
+  .row button { flex:1; }
+  .big { font-size:38px; font-weight:700; margin:4px 0; font-variant-numeric:tabular-nums; }
+  .sub { font-size:14px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin-top:8px; }
+  th,td { text-align:left; padding:6px 4px; border-bottom:1px solid #eceef3; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.me td { background:#eef2ff; font-weight:600; }
+  .err { color:#b42318; font-size:14px; }
+  .part { margin:8px 0; line-height:1.4; font-size:14px; }
+  .part b { color:var(--ink); }
+  .legend { font-size:13px; color:var(--muted); margin-top:6px; line-height:1.6; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:4px; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="bar">
+    <div id="status">Enter your name to start.</div>
+    <button id="undoBtn" disabled>Undo</button>
+    <button id="submitBtn" class="primary" disabled>Submit</button>
+    <button id="resultsBtn" class="hidden">Results</button>
+  </div>
+</div>
+
+<!-- Start screen -->
+<div id="startScreen" class="overlay">
+  <div class="card">
+    <h1>Where are the Flock cameras?</h1>
+    <p>Newport News has <b id="camCount"></b> Flock license-plate cameras. Tap the map to place <b id="guessCount"></b> guesses where you think they are. Tap a guess again to remove it.</p>
+    <p>Your score, in miles, combines two things: how close your guesses land to real cameras (<b>accuracy</b>) and how well your guesses cover all the cameras (<b>coverage</b>). <b>Lowest score wins.</b></p>
+    <label for="nameIn">Your name</label>
+    <input id="nameIn" maxlength="40" autocomplete="off">
+    <div id="startErr" class="err"></div>
+    <div class="row"><button id="startBtn" class="primary">Start</button></div>
+  </div>
+</div>
+
+<!-- Results screen -->
+<div id="resultScreen" class="overlay hidden">
+  <div class="card">
+    <h2>Your score</h2>
+    <div class="big" id="scoreBig"></div>
+    <div class="sub" id="scoreParts"></div>
+    <div class="legend">
+      <span class="dot" style="background:var(--accent)"></span>your guesses
+      &nbsp; <span class="dot" style="background:var(--cam)"></span>real cameras<br>
+      <b>Solid blue line</b>: from each of your guesses to the closest real camera (accuracy).<br><b>Dashed pink line</b>: from each real camera to your closest guess (coverage).
+    </div>
+    <div id="uploadMsg" class="sub" style="margin-top:10px"></div>
+    <h2 style="margin-top:16px">Leaderboard <span class="sub" id="lbCode"></span></h2>
+    <div id="lb" class="sub">Loading…</div>
+    <div class="row">
+      <button id="refreshBtn">Refresh</button>
+      <button id="viewMapBtn">View map</button>
+      <button id="againBtn" class="primary">Play again</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===================== CONFIG (instructor edits these) =====================
+const CONFIG = {
+  // Paste the Apps Script web app URL here (ends in /exec). Leave "" to play offline.
+  SCRIPT_URL: "https://script.google.com/a/macros/cnu.edu/s/AKfycbz_fo9iiodjLZqgaUmwWzCREOqBIKewhmyCdMg2T-GxA8jDmvqG384zLKWpJhD0aEbQTw/exec",
+  NUM_GUESSES: 15,
+  // Everyone shares one leaderboard. Optional: add ?code=SECTION1 to a link to give a group its own board.
+  DEFAULT_CODE: "ALL",
+};
+// ===========================================================================
+
+const CAMERAS = [[37.205818,-76.574199],[37.205764,-76.572916],[37.196694,-76.571679],[37.19132,-76.571675],[37.170489,-76.564793],[37.164467,-76.556048],[37.15128,-76.553624],[37.151301,-76.551886],[37.149079,-76.551274],[37.17539,-76.550508],[37.175188,-76.550457],[37.145835,-76.550273],[37.136156,-76.546026],[37.136392,-76.545144],[37.135837,-76.545123],[37.162473,-76.54239],[37.133179,-76.541775],[37.159336,-76.536689],[37.159677,-76.536419],[37.132571,-76.530899],[37.151117,-76.530402],[37.177158,-76.525465],[37.136805,-76.523201],[37.137821,-76.521312],[37.139129,-76.52027],[37.136971,-76.518796],[37.141081,-76.517892],[37.125038,-76.51703],[37.114821,-76.516572],[37.125812,-76.515799],[37.103646,-76.511963],[37.121792,-76.506591],[37.120804,-76.506354],[37.09215,-76.503653],[37.105776,-76.502423],[37.113098,-76.500306],[37.112961,-76.499689],[37.083119,-76.497645],[37.086388,-76.495514],[37.101816,-76.492223],[37.085978,-76.49194],[37.10043,-76.491443],[37.104621,-76.488552],[37.062217,-76.487952],[37.060858,-76.486177],[37.104355,-76.485916],[37.083764,-76.48054],[37.10331,-76.480077],[37.073355,-76.476589],[37.077257,-76.475595],[37.074194,-76.474754],[37.049838,-76.474687],[37.042121,-76.471854],[37.058758,-76.467074],[37.05645,-76.460562],[37.097966,-76.46041],[37.084656,-76.460084],[37.086749,-76.459303],[37.063259,-76.459219],[37.088563,-76.459063],[37.093181,-76.45887],[37.099803,-76.458785],[37.013519,-76.455795],[37.030637,-76.455627],[37.013967,-76.454947],[37.015241,-76.453588],[37.03053,-76.452163],[37.064253,-76.451718],[37.020136,-76.451687],[37.013562,-76.447995],[37.0206,-76.445111],[37.018541,-76.44425],[37.006332,-76.434891],[36.991441,-76.427129],[36.988788,-76.424803],[36.998118,-76.424767],[36.998124,-76.424544],[36.974662,-76.420175],[36.990125,-76.419639],[37.012983,-76.418419],[36.973928,-76.416569],[36.973902,-76.416328],[36.976096,-76.414114],[36.998357,-76.41302],[36.994463,-76.410903],[36.988227,-76.403694],[36.980992,-76.40239],[36.983064,-76.396236]]; // [lat, lon], Newport News Flock cameras
+
+// ---------- scoring ----------
+const R_MI = 3958.8;
+function hav(a, b) {
+  const toR = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * toR, dLon = (b[1] - a[1]) * toR;
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * toR) * Math.cos(b[0] * toR) * Math.sin(dLon / 2) ** 2;
+  return 2 * R_MI * Math.asin(Math.sqrt(s));
+}
+function nearest(p, set) {
+  let best = Infinity, idx = -1;
+  set.forEach((q, i) => { const d = hav(p, q); if (d < best) { best = d; idx = i; } });
+  return { d: best, i: idx };
+}
+// Two-way (Chamfer) score: mean of (guess→nearest camera) and (camera→nearest guess)
+function score(guesses) {
+  const g2c = guesses.map(g => nearest(g, CAMERAS));
+  const c2g = CAMERAS.map(c => nearest(c, guesses));
+  const mean = a => a.reduce((s, x) => s + x.d, 0) / a.length;
+  const precision = mean(g2c), coverage = mean(c2g);
+  return { score: (precision + coverage) / 2, precision, coverage, g2c, c2g };
+}
+
+// ---------- map ----------
+const pad = 0.012;
+const lats = CAMERAS.map(c => c[0]), lons = CAMERAS.map(c => c[1]);
+const bounds = L.latLngBounds([Math.min(...lats) - pad, Math.min(...lons) - pad], [Math.max(...lats) + pad, Math.max(...lons) + pad]);
+const map = L.map("map", { zoomControl: true, maxBounds: bounds.pad(0.6), minZoom: 10 });
+map.fitBounds(bounds);
+// Basemap: Esri Light Gray (no API key). Falls back to OpenStreetMap if Esri tiles fail.
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
+const esriBase = L.tileLayer(ESRI + "World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 16, attribution: "Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors",
+});
+const esriLabels = L.tileLayer(ESRI + "World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}", { maxZoom: 16 });
+let tileOK = 0, tileFail = 0, swapped = false;
+esriBase.on("tileload", () => tileOK++);
+esriBase.on("tileerror", () => {
+  if (++tileFail >= 4 && tileOK === 0 && !swapped) {
+    swapped = true; map.removeLayer(esriBase); map.removeLayer(esriLabels);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
+  }
+});
+esriBase.addTo(map); esriLabels.addTo(map);
+
+const guessLayer = L.layerGroup().addTo(map);
+const revealLayer = L.layerGroup().addTo(map);
+let guesses = [];      // [lat, lon]
+let locked = true;     // true before start and after submit
+let player = { name: "", code: "" };
+
+function drawGuesses() {
+  guessLayer.clearLayers();
+  guesses.forEach((g, i) => {
+    const m = L.circleMarker(g, { radius: 11, color: "#fff", weight: 2, fillColor: "#2f5bea", fillOpacity: 1, bubblingMouseEvents: false });
+    if (!locked) m.on("click", () => { guesses.splice(i, 1); refresh(); });
+    m.addTo(guessLayer);
+  });
+}
+function refresh() {
+  drawGuesses();
+  const left = CONFIG.NUM_GUESSES - guesses.length;
+  const s = document.getElementById("status");
+  if (!locked) s.innerHTML = left > 0 ? `Guesses placed: <b>${guesses.length}/${CONFIG.NUM_GUESSES}</b> · place all ${CONFIG.NUM_GUESSES} to submit` : `All <b>${CONFIG.NUM_GUESSES}</b> placed. Adjust or submit.`;
+  document.getElementById("undoBtn").disabled = locked || guesses.length === 0;
+  document.getElementById("submitBtn").disabled = locked || guesses.length < CONFIG.NUM_GUESSES;
+}
+map.on("click", e => {
+  if (locked || guesses.length >= CONFIG.NUM_GUESSES) return;
+  guesses.push([+e.latlng.lat.toFixed(6), +e.latlng.lng.toFixed(6)]);
+  refresh();
+});
+
+// ---------- UI ----------
+const $ = id => document.getElementById(id);
+$("camCount").textContent = CAMERAS.length;
+$("guessCount").textContent = CONFIG.NUM_GUESSES;
+const qCode = new URLSearchParams(location.search).get("code");
+const CODE = (qCode || CONFIG.DEFAULT_CODE).trim().toUpperCase().slice(0, 20);
+try { $("nameIn").value = localStorage.getItem("flockName") || ""; } catch (e) {}
+
+$("startBtn").onclick = () => {
+  const name = $("nameIn").value.trim(), code = CODE;
+  if (!name) { $("startErr").textContent = "Enter your name."; return; }
+  try { localStorage.setItem("flockName", name); } catch (e) {}
+  player = { name, code };
+  $("startScreen").classList.add("hidden");
+  locked = false; refresh();
+};
+$("undoBtn").onclick = () => { guesses.pop(); refresh(); };
+$("submitBtn").onclick = submit;
+$("againBtn").onclick = () => {
+  guesses = []; revealLayer.clearLayers(); locked = false;
+  $("resultScreen").classList.add("hidden"); $("resultsBtn").classList.add("hidden");
+  $("undoBtn").classList.remove("hidden"); $("submitBtn").classList.remove("hidden");
+  map.fitBounds(bounds); refresh();
+};
+$("viewMapBtn").onclick = () => { $("resultScreen").classList.add("hidden"); $("resultsBtn").classList.remove("hidden"); };
+$("resultsBtn").onclick = () => { $("resultScreen").classList.remove("hidden"); $("resultsBtn").classList.add("hidden"); };
+$("refreshBtn").onclick = loadLeaderboard;
+
+function reveal(r) {
+  revealLayer.clearLayers();
+  r.c2g.forEach((n, i) => L.polyline([CAMERAS[i], guesses[n.i]], { color: "#d6336c", weight: 1.5, opacity: .55, dashArray: "4 5" }).addTo(revealLayer));
+  r.g2c.forEach((n, i) => L.polyline([guesses[i], CAMERAS[n.i]], { color: "#2f5bea", weight: 2.5, opacity: .85 }).addTo(revealLayer));
+  CAMERAS.forEach(c => L.circleMarker(c, { radius: 5, color: "#fff", weight: 1, fillColor: "#d6336c", fillOpacity: 1 }).addTo(revealLayer));
+  guessLayer.bringToFront && guessLayer.eachLayer(l => l.bringToFront());
+}
+
+async function submit() {
+  locked = true; refresh();
+  const r = score(guesses);
+  reveal(r);
+  drawGuesses();
+  $("status").innerHTML = `Score: <b>${r.score.toFixed(2)} mi</b>`;
+  $("undoBtn").classList.add("hidden"); $("submitBtn").classList.add("hidden");
+  $("scoreBig").textContent = r.score.toFixed(2) + " mi";
+  $("scoreParts").innerHTML =
+    `<div class="part"><b>Accuracy: ${r.precision.toFixed(2)} mi</b><br>On average, each of your guesses was ${r.precision.toFixed(2)} mi from the closest real camera. Lower means your guesses landed on or near cameras.</div>` +
+    `<div class="part"><b>Coverage: ${r.coverage.toFixed(2)} mi</b><br>On average, each real camera was ${r.coverage.toFixed(2)} mi from your closest guess. Lower means you didn't miss areas that have cameras.</div>` +
+    `<div class="part">Score = average of the two: (${r.precision.toFixed(2)} + ${r.coverage.toFixed(2)}) ÷ 2 = <b>${r.score.toFixed(2)} mi</b></div>`;
+  $("lbCode").textContent = player.code === "ALL" ? "" : "· " + player.code;
+  $("resultScreen").classList.remove("hidden");
+
+  if (!CONFIG.SCRIPT_URL) { $("uploadMsg").textContent = "Offline mode: score not uploaded (no SCRIPT_URL set)."; $("lb").textContent = ""; return; }
+  $("uploadMsg").textContent = "Uploading score…";
+  try {
+    const res = await fetch(CONFIG.SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // text/plain avoids a CORS preflight
+      body: JSON.stringify({ name: player.name, code: player.code, guesses }),
+    });
+    const out = await res.json();
+    if (!out.ok) throw new Error(out.error || "upload failed");
+    $("uploadMsg").textContent = "Score uploaded ✓";
+  } catch (e) {
+    $("uploadMsg").innerHTML = `<span class="err">Upload failed (${e.message}). Tell your instructor your score.</span>`;
+  }
+  loadLeaderboard();
+}
+
+async function loadLeaderboard() {
+  if (!CONFIG.SCRIPT_URL) return;
+  $("lb").textContent = "Loading…";
+  try {
+    const res = await fetch(CONFIG.SCRIPT_URL + "?code=" + encodeURIComponent(player.code));
+    const out = await res.json();
+    if (!out.ok) throw new Error(out.error);
+    if (!out.rows.length) { $("lb").textContent = "No scores yet."; return; }
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    $("lb").innerHTML = `<table><tr><th>#</th><th>Name</th><th class="num">Best (mi)</th><th class="num">Tries</th></tr>` +
+      out.rows.map((r, i) => `<tr class="${r.name.toLowerCase() === player.name.toLowerCase() ? "me" : ""}"><td>${i + 1}</td><td>${esc(r.name)}</td><td class="num">${(+r.best).toFixed(2)}</td><td class="num">${r.tries}</td></tr>`).join("") + `</table>`;
+  } catch (e) {
+    $("lb").innerHTML = `<span class="err">Couldn't load leaderboard (${e.message}).</span>`;
+  }
+}
+</script>
+</body>
+</html>
